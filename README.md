@@ -1,4 +1,4 @@
-# Adeept 5 DOF Robotic Arm
+# adeept-robot
 
 Arduino sketch and scripts to run the **Adeept 5 DOF Robotic Arm** from the command line (arduino-cli). Compatible with Arduino UNO R3 and the Adeept Robotic Arm Driver Board (ATMEGA328P).
 
