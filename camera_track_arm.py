@@ -32,6 +32,18 @@ def parse_args() -> argparse.Namespace:
         default=220,
         help="Minimum milliseconds between arm commands (default: 220)",
     )
+    parser.add_argument(
+        "--stable-frames",
+        type=int,
+        default=3,
+        help="Consecutive frames that must agree before sending a move (default: 3)",
+    )
+    parser.add_argument(
+        "--reverse-guard-ms",
+        type=int,
+        default=500,
+        help="Minimum ms before allowing opposite-direction command (default: 500)",
+    )
     parser.add_argument("--h-min", type=int, default=40, help="HSV H lower bound")
     parser.add_argument("--s-min", type=int, default=70, help="HSV S lower bound")
     parser.add_argument("--v-min", type=int, default=70, help="HSV V lower bound")
@@ -80,6 +92,34 @@ def manual_move_command(key: int) -> Optional[str]:
     return None
 
 
+def tracking_move_command(dx: int, dy: int, deadzone: int) -> Optional[str]:
+    """
+    Pick one tracking command based on the dominant axis offset.
+    This reduces jitter from frame-to-frame axis switching.
+    """
+    x_cmd: Optional[str] = None
+    y_cmd: Optional[str] = None
+    if dx < -deadzone:
+        x_cmd = "b"
+    elif dx > deadzone:
+        x_cmd = "n"
+
+    if dy < -deadzone:
+        y_cmd = "u"
+    elif dy > deadzone:
+        y_cmd = "l"
+
+    if x_cmd is None and y_cmd is None:
+        return None
+    if x_cmd is None:
+        return y_cmd
+    if y_cmd is None:
+        return x_cmd
+    if abs(dx) >= abs(dy):
+        return x_cmd
+    return y_cmd
+
+
 def main() -> int:
     args = parse_args()
 
@@ -110,6 +150,12 @@ def main() -> int:
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     last_cmd_ts = 0.0
     min_interval = max(0.05, args.interval_ms / 1000.0)
+    reverse_guard = max(0.0, args.reverse_guard_ms / 1000.0)
+    stable_frames = max(1, args.stable_frames)
+    pending_cmd: Optional[str] = None
+    pending_count = 0
+    last_sent_cmd: Optional[str] = None
+    opposite_cmd = {"b": "n", "n": "b", "u": "l", "l": "u"}
 
     while True:
         ok, frame = cap.read()
@@ -153,18 +199,31 @@ def main() -> int:
             dx = target_x - cx
             dy = target_y - cy
             status = f"Target dx={dx} dy={dy} area={int(largest_area)}"
+            candidate = tracking_move_command(dx, dy, args.deadzone)
+            if candidate is None:
+                pending_cmd = None
+                pending_count = 0
+                status += " hold"
+            else:
+                if candidate == pending_cmd:
+                    pending_count += 1
+                else:
+                    pending_cmd = candidate
+                    pending_count = 1
+                status += f" cmd={candidate} stable={pending_count}/{stable_frames}"
 
-            if now - last_cmd_ts >= min_interval:
-                # Camera feed is mirrored; commands chosen to keep object centered.
-                if dx < -args.deadzone:
-                    send_cmd(ser, "b")
-                elif dx > args.deadzone:
-                    send_cmd(ser, "n")
-                elif dy < -args.deadzone:
-                    send_cmd(ser, "u")
-                elif dy > args.deadzone:
-                    send_cmd(ser, "l")
-                last_cmd_ts = now
+                # Only emit movement when input is stable enough and rate limits allow it.
+                if pending_count >= stable_frames and now - last_cmd_ts >= min_interval:
+                    if (
+                        last_sent_cmd is not None
+                        and candidate == opposite_cmd[last_sent_cmd]
+                        and now - last_cmd_ts < reverse_guard
+                    ):
+                        status += " reverse-guard"
+                    else:
+                        send_cmd(ser, candidate)
+                        last_cmd_ts = now
+                        last_sent_cmd = candidate
 
         cv2.putText(
             frame,
