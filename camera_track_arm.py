@@ -44,6 +44,17 @@ def parse_args() -> argparse.Namespace:
         default=900,
         help="Minimum contour area to accept as target (default: 900)",
     )
+    parser.add_argument(
+        "--direction-mode",
+        choices=("axis", "8way"),
+        default="axis",
+        help="axis=b/n/u/l (default) or 8way=8/9/6/3/2/1/4/7 stylus drawing commands",
+    )
+    parser.add_argument(
+        "--stylus-start",
+        action="store_true",
+        help="Send p then z at startup (enable stylus mode and go to stylus touch home)",
+    )
     return parser.parse_args()
 
 
@@ -80,6 +91,36 @@ def manual_move_command(key: int) -> Optional[str]:
     return None
 
 
+def tracking_command(dx: int, dy: int, deadzone: int, direction_mode: str) -> Optional[str]:
+    x_dir = -1 if dx < -deadzone else (1 if dx > deadzone else 0)
+    y_dir = -1 if dy < -deadzone else (1 if dy > deadzone else 0)
+
+    if x_dir == 0 and y_dir == 0:
+        return None
+
+    if direction_mode == "axis":
+        if x_dir < 0:
+            return "b"
+        if x_dir > 0:
+            return "n"
+        if y_dir < 0:
+            return "u"
+        return "l"
+
+    # 8-way stylus map (numeric keypad direction commands).
+    keypad_map = {
+        (0, -1): "8",    # north
+        (1, -1): "9",    # north-east
+        (1, 0): "6",     # east
+        (1, 1): "3",     # south-east
+        (0, 1): "2",     # south
+        (-1, 1): "1",    # south-west
+        (-1, 0): "4",    # west
+        (-1, -1): "7",   # north-west
+    }
+    return keypad_map[(x_dir, y_dir)]
+
+
 def main() -> int:
     args = parse_args()
 
@@ -100,16 +141,25 @@ def main() -> int:
 
     print("Tracking started.")
     print(
-        "Keys: arrows or WASD=jog shoulder/base (up/down/left/right), "
-        "e/t=elbow out/in, q=quit, h=home, o/c=gripper open/close"
+        "Keys: arrows or WASD=jog shoulder/base, e/t=elbow out/in, "
+        "q=quit, h=home, o/c=gripper, p/k=stylus/claw mode, x=save stylus touch home, z=go touch home"
     )
-    print("Move a green object in front of camera.")
+    if args.direction_mode == "8way":
+        print("Direction mode: 8way (sends 8/9/6/3/2/1/4/7 for N/NE/E/SE/S/SW/W/NW).")
+    else:
+        print("Direction mode: axis (sends b/n/u/l).")
+    print("Move a colored stylus marker (default green) in front of camera.")
 
     lower = (args.h_min, args.s_min, args.v_min)
     upper = (args.h_max, args.s_max, args.v_max)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     last_cmd_ts = 0.0
     min_interval = max(0.05, args.interval_ms / 1000.0)
+    if args.stylus_start:
+        send_cmd(ser, "p")
+        time.sleep(0.12)
+        send_cmd(ser, "z")
+        time.sleep(0.12)
 
     while True:
         ok, frame = cap.read()
@@ -155,16 +205,11 @@ def main() -> int:
             status = f"Target dx={dx} dy={dy} area={int(largest_area)}"
 
             if now - last_cmd_ts >= min_interval:
-                # Camera feed is mirrored; commands chosen to keep object centered.
-                if dx < -args.deadzone:
-                    send_cmd(ser, "b")
-                elif dx > args.deadzone:
-                    send_cmd(ser, "n")
-                elif dy < -args.deadzone:
-                    send_cmd(ser, "u")
-                elif dy > args.deadzone:
-                    send_cmd(ser, "l")
-                last_cmd_ts = now
+                # Camera feed is mirrored; firmware command map keeps object centered.
+                cmd = tracking_command(dx, dy, args.deadzone, args.direction_mode)
+                if cmd is not None:
+                    send_cmd(ser, cmd)
+                    last_cmd_ts = now
 
         cv2.putText(
             frame,
@@ -187,6 +232,9 @@ def main() -> int:
         if jog is not None:
             send_cmd(ser, jog)
             last_cmd_ts = now
+        elif (key & 0xFF) in (ord("8"), ord("9"), ord("6"), ord("3"), ord("2"), ord("1"), ord("4"), ord("7")):
+            send_cmd(ser, chr(key & 0xFF))
+            last_cmd_ts = now
         elif (key & 0xFF) == ord("q"):
             break
         elif (key & 0xFF) == ord("h"):
@@ -195,6 +243,14 @@ def main() -> int:
             send_cmd(ser, "o")
         elif (key & 0xFF) == ord("c"):
             send_cmd(ser, "c")
+        elif (key & 0xFF) in (ord("p"), ord("P")):
+            send_cmd(ser, "p")
+        elif (key & 0xFF) in (ord("k"), ord("K")):
+            send_cmd(ser, "k")
+        elif (key & 0xFF) in (ord("x"), ord("X")):
+            send_cmd(ser, "x")
+        elif (key & 0xFF) in (ord("z"), ord("Z")):
+            send_cmd(ser, "z")
         elif (key & 0xFF) in (ord("e"), ord("E")):
             send_cmd(ser, "e")
             last_cmd_ts = now

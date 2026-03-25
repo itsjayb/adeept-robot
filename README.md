@@ -41,14 +41,30 @@ List ports: `arduino-cli board list`
 
 ## Serial commands (9600 baud)
 
-| Key | Action        |
-|-----|---------------|
+| Key | Action |
+|-----|--------|
 | `h` | Home position |
 | `d` | Demo sequence |
-| `o` | Open gripper  |
-| `c` | Close gripper |
+| `o` / `c` | Open / close gripper |
+| `p` / `k` | Stylus mode ON / claw mode ON |
+| `x` | Save current pose as stylus **touch-home** (tip touching iPad) |
+| `z` | Move to saved stylus touch-home |
+| `s` | Save current drawing pose |
+| `g` | Move to saved drawing pose |
+| `f` / `v` | Drawing line forward / backward |
+| `8` `9` `6` `3` `2` `1` `4` `7` | Stylus N / NE / E / SE / S / SW / W / NW step |
 
 Open Serial Monitor at 9600 baud (e.g. `arduino-cli monitor -p /dev/cu.usbmodem* -c baudrate=9600`) and type these keys.
+
+## Stylus calibration workflow (iPad drawing)
+
+Use this once after mounting the stylus attachment:
+
+1. Send `p` to enable stylus mode (firmware applies stylus grip angle).
+2. Jog arm with `b/n/u/l/e/t` until stylus just touches the iPad surface.
+3. Send `x` to save this contact pose as stylus touch-home.
+4. Send `z` any time to return to touch-home before drawing.
+5. Use `8/9/6/3/2/1/4/7` for 8-direction in-contact drawing steps.
 
 ## Tuning
 
@@ -83,12 +99,12 @@ python3 camera_view.py --camera 1
 python3 camera_view.py --camera 2
 ```
 
-## Camera -> arm tracking (green object)
+## Camera -> arm tracking (green stylus marker)
 
-This script detects a green object and sends movement commands to the arm over serial:
+This script detects a green marker and sends movement commands to the arm over serial:
 
-- left/right target offset -> base rotate (`b` / `n`)
-- up/down target offset -> shoulder move (`u` / `l`)
+- `--direction-mode axis` (default): sends `b/n/u/l`
+- `--direction-mode 8way`: sends `8/9/6/3/2/1/4/7` for stylus drawing moves
 
 1) Find board port:
 
@@ -103,22 +119,22 @@ source .venv/bin/activate
 python3 camera_track_arm.py --port /dev/cu.usbserial-2130
 ```
 
-Tracker controls:
+For stylus drawing on iPad (enable stylus and move to touch-home at start):
+
+```bash
+python3 camera_track_arm.py --port /dev/cu.usbserial-2130 --direction-mode 8way --stylus-start
+```
+
+Tracker controls (while camera window is focused):
 
 - `q` quit
-- `h` or `0` — **home / neutral** (Arduino moves all joints to ~90° and gripper closed — that is the sketch’s “start pose”, not literal 0° servo PWM)
-- `o` open gripper
-- `c` close gripper
-- `m` toggle auto-tracking on/off (**auto starts OFF** so the arm won’t move until you press `m`)
-
-Manual movement keys (while camera window is focused):
-
-- `a` base left
-- `d` base right
-- `w` shoulder up
-- `s` shoulder down
-- `r` elbow out
-- `f` elbow in
+- `h` home / neutral
+- `o` / `c` open / close gripper
+- `p` / `k` stylus mode / claw mode
+- `x` save stylus touch-home, `z` go to stylus touch-home
+- Arrow keys or `WASD`: jog shoulder/base
+- `e` / `t`: elbow out / in
+- `8/9/6/3/2/1/4/7`: send direct 8-way stylus commands
 
 Useful tuning examples:
 
@@ -129,11 +145,8 @@ python3 camera_track_arm.py --port /dev/cu.usbserial-2130 --camera 1
 # Slower command rate + larger deadzone (less jitter)
 python3 camera_track_arm.py --port /dev/cu.usbserial-2130 --interval-ms 300 --deadzone 70
 
-# Stronger smoothing + hold last target when blob vanishes briefly (reduces flicker)
-python3 camera_track_arm.py --port /dev/cu.usbserial-2130 --ema 0.2 --lost-hold-ms 400
-
-# Old behavior: auto-tracking ON as soon as the app starts
-python3 camera_track_arm.py --port /dev/cu.usbserial-2130 --auto-start
+# 8-way stylus direction output + stylus startup sequence
+python3 camera_track_arm.py --port /dev/cu.usbserial-2130 --direction-mode 8way --stylus-start
 ```
 
 ## Upload: "programmer is not responding" / "not in sync: resp=0x00"
