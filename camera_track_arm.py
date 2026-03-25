@@ -6,11 +6,15 @@ Default target color is green in HSV space. Tune with CLI flags if needed.
 """
 
 import argparse
+import select
+import sys
 import time
 from typing import Optional
 
 import cv2
 import serial
+
+from bot_commands import CapabilityContext, evaluate_command
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,6 +47,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=900,
         help="Minimum contour area to accept as target (default: 900)",
+    )
+    parser.add_argument(
+        "--bot-chat",
+        action="store_true",
+        help="Enable natural-language command chat from terminal input.",
+    )
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        help="Speak bot responses (requires pyttsx3).",
     )
     return parser.parse_args()
 
@@ -80,8 +94,50 @@ def manual_move_command(key: int) -> Optional[str]:
     return None
 
 
+class SpeechEngine:
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self.engine = None
+        if not enabled:
+            return
+        try:
+            import pyttsx3
+
+            self.engine = pyttsx3.init()
+        except Exception as exc:  # pragma: no cover - depends on local audio stack
+            print(f"Voice disabled: could not initialize pyttsx3 ({exc})")
+            self.enabled = False
+
+    def speak(self, text: str) -> None:
+        if not self.enabled or self.engine is None:
+            return
+        try:
+            self.engine.say(text)
+            self.engine.runAndWait()
+        except Exception as exc:  # pragma: no cover - depends on local audio stack
+            print(f"Voice disabled after runtime error: {exc}")
+            self.enabled = False
+            self.engine = None
+
+
+def read_terminal_line_nonblocking() -> Optional[str]:
+    if sys.stdin is None:
+        return None
+    try:
+        readable, _, _ = select.select([sys.stdin], [], [], 0)
+    except (OSError, ValueError):
+        return None
+    if not readable:
+        return None
+    line = sys.stdin.readline()
+    if not line:
+        return None
+    return line.strip()
+
+
 def main() -> int:
     args = parse_args()
+    speaker = SpeechEngine(enabled=args.voice)
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
@@ -104,6 +160,16 @@ def main() -> int:
         "e/t=elbow out/in, q=quit, h=home, o/c=gripper open/close"
     )
     print("Move a green object in front of camera.")
+    if args.bot_chat:
+        print(
+            "Bot chat enabled. Type requests in this terminal, for example: "
+            "'draw the letter j with a single line'."
+        )
+    if args.voice:
+        if speaker.enabled:
+            print("Voice replies enabled.")
+        else:
+            print("Voice replies requested, but unavailable on this machine.")
 
     lower = (args.h_min, args.s_min, args.v_min)
     upper = (args.h_max, args.s_max, args.v_max)
@@ -148,11 +214,13 @@ def main() -> int:
         cv2.drawMarker(frame, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 16, 2)
 
         status = "No target"
+        good_view = False
         now = time.monotonic()
         if target_x is not None and target_y is not None:
             dx = target_x - cx
             dy = target_y - cy
             status = f"Target dx={dx} dy={dy} area={int(largest_area)}"
+            good_view = True
 
             if now - last_cmd_ts >= min_interval:
                 # Camera feed is mirrored; commands chosen to keep object centered.
@@ -201,6 +269,27 @@ def main() -> int:
         elif (key & 0xFF) in (ord("t"), ord("T")):
             send_cmd(ser, "t")
             last_cmd_ts = now
+
+        if args.bot_chat:
+            command_text = read_terminal_line_nonblocking()
+            if command_text:
+                if command_text.lower() in {"quit", "exit"}:
+                    print("Bot: Ending session.")
+                    break
+                decision = evaluate_command(
+                    command_text,
+                    CapabilityContext(
+                        live_feed_ready=ok,
+                        good_view=good_view,
+                        supported_letters=("j",),
+                    ),
+                )
+                print(f"Bot: {decision.response}")
+                speaker.speak(decision.response)
+                if decision.should_execute and decision.serial_command:
+                    send_cmd(ser, decision.serial_command)
+                    print(f"Bot action: sent '{decision.serial_command}'")
+                    last_cmd_ts = now
 
     cap.release()
     ser.close()
