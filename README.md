@@ -103,13 +103,32 @@ source .venv/bin/activate
 python3 camera_track_arm.py --port /dev/cu.usbserial-2130
 ```
 
+Natural-language chat mode (type requests in the terminal while the window is open):
+
+```bash
+python3 camera_track_arm.py --port /dev/cu.usbserial-2130 --bot-chat
+```
+
+Example prompts:
+
+- `draw the letter j with a single line`
+- `can you draw the letter a?`
+- `do we have a good live feed?`
+- `help`
+
+Optional voice replies:
+
+```bash
+python3 camera_track_arm.py --port /dev/cu.usbserial-2130 --bot-chat --voice
+```
+
 Tracker controls:
 
 - `q` quit
 - `h` or `0` — **home / neutral** (Arduino moves all joints to ~90° and gripper closed — that is the sketch’s “start pose”, not literal 0° servo PWM)
 - `o` open gripper
 - `c` close gripper
-- `m` toggle auto-tracking on/off (**auto starts OFF** so the arm won’t move until you press `m`)
+- In `--bot-chat` mode, type `quit` or `exit` in terminal to end chat + tracking.
 
 Manual movement keys (while camera window is focused):
 
