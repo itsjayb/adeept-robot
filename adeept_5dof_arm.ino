@@ -34,12 +34,19 @@
 #define WRIST_ROT_MAX 180
 #define GRIPPER_MIN   60   // closed
 #define GRIPPER_MAX   120  // open
+#define STYLUS_GRIPPER_ANGLE 68 // gentle pen hold
 
 // --- Motion ---
 #define STEP_DELAY_MS 15   // delay per degree step (increase for slower motion)
 #define LINE_STEP     10   // degrees per "line forward/backward" step
-#define EEPROM_MAGIC  0xAB
-#define EEPROM_ADDR  0
+#define STYLUS_BASE_STEP      3
+#define STYLUS_SHOULDER_STEP  2
+#define STYLUS_ELBOW_COMP     1
+
+#define EEPROM_DRAW_MAGIC      0xAB
+#define EEPROM_DRAW_ADDR       0
+#define EEPROM_STYLUS_MAGIC    0x5C
+#define EEPROM_STYLUS_ADDR     16
 
 Servo servoBase;
 Servo servoShoulder;
@@ -54,9 +61,12 @@ int posElbow = 90;
 int posWrist = 90;
 int posWristRot = 90;
 int posGripper = GRIPPER_MIN;
+bool stylusMode = false;
 
 // Saved "pen on paper" pose (calibrated by user). Persisted in EEPROM.
 int drawBase = 90, drawShoulder = 90, drawElbow = 90, drawWrist = 90, drawWristRot = 90;
+// Saved "stylus touching iPad" pose for 8-way drawing. Persisted in EEPROM.
+int stylusTouchBase = 90, stylusTouchShoulder = 90, stylusTouchElbow = 90, stylusTouchWrist = 90, stylusTouchWristRot = 90, stylusTouchGripper = STYLUS_GRIPPER_ANGLE;
 
 void clamp(int& val, int lo, int hi) {
   if (val < lo) val = lo;
@@ -74,18 +84,31 @@ void writeServo(Servo& s, int current, int target, int minA, int maxA) {
 }
 
 void moveTo(int b, int sh, int e, int w, int wr, int g) {
-  writeServo(servoBase,      posBase,      b,  BASE_MIN,      BASE_MAX);
-  writeServo(servoShoulder,  posShoulder,  sh, SHOULDER_MIN,  SHOULDER_MAX);
-  writeServo(servoElbow,     posElbow,     e,  ELBOW_MIN,     ELBOW_MAX);
-  writeServo(servoWrist,     posWrist,     w,  WRIST_MIN,     WRIST_MAX);
-  writeServo(servoWristRot,  posWristRot,  wr, WRIST_ROT_MIN, WRIST_ROT_MAX);
-  writeServo(servoGripper,   posGripper,   g,  GRIPPER_MIN,   GRIPPER_MAX);
-  posBase = b;
-  posShoulder = sh;
-  posElbow = e;
-  posWrist = w;
-  posWristRot = wr;
-  posGripper = g;
+  int targetBase = b;
+  int targetShoulder = sh;
+  int targetElbow = e;
+  int targetWrist = w;
+  int targetWristRot = wr;
+  int targetGripper = g;
+  clamp(targetBase, BASE_MIN, BASE_MAX);
+  clamp(targetShoulder, SHOULDER_MIN, SHOULDER_MAX);
+  clamp(targetElbow, ELBOW_MIN, ELBOW_MAX);
+  clamp(targetWrist, WRIST_MIN, WRIST_MAX);
+  clamp(targetWristRot, WRIST_ROT_MIN, WRIST_ROT_MAX);
+  clamp(targetGripper, GRIPPER_MIN, GRIPPER_MAX);
+
+  writeServo(servoBase,      posBase,      targetBase,      BASE_MIN,      BASE_MAX);
+  writeServo(servoShoulder,  posShoulder,  targetShoulder,  SHOULDER_MIN,  SHOULDER_MAX);
+  writeServo(servoElbow,     posElbow,     targetElbow,     ELBOW_MIN,     ELBOW_MAX);
+  writeServo(servoWrist,     posWrist,     targetWrist,     WRIST_MIN,     WRIST_MAX);
+  writeServo(servoWristRot,  posWristRot,  targetWristRot,  WRIST_ROT_MIN, WRIST_ROT_MAX);
+  writeServo(servoGripper,   posGripper,   targetGripper,   GRIPPER_MIN,   GRIPPER_MAX);
+  posBase = targetBase;
+  posShoulder = targetShoulder;
+  posElbow = targetElbow;
+  posWrist = targetWrist;
+  posWristRot = targetWristRot;
+  posGripper = targetGripper;
 }
 
 // Draw letter J on paper. Position arm first so pencil tip is ON the paper, then send 'j'.
@@ -104,21 +127,71 @@ void drawJ() {
 }
 
 void loadDrawingPose() {
-  if (EEPROM.read(EEPROM_ADDR) != EEPROM_MAGIC) return;
-  drawBase      = EEPROM.read(EEPROM_ADDR + 1);
-  drawShoulder  = EEPROM.read(EEPROM_ADDR + 2);
-  drawElbow     = EEPROM.read(EEPROM_ADDR + 3);
-  drawWrist     = EEPROM.read(EEPROM_ADDR + 4);
-  drawWristRot  = EEPROM.read(EEPROM_ADDR + 5);
+  if (EEPROM.read(EEPROM_DRAW_ADDR) != EEPROM_DRAW_MAGIC) return;
+  drawBase      = EEPROM.read(EEPROM_DRAW_ADDR + 1);
+  drawShoulder  = EEPROM.read(EEPROM_DRAW_ADDR + 2);
+  drawElbow     = EEPROM.read(EEPROM_DRAW_ADDR + 3);
+  drawWrist     = EEPROM.read(EEPROM_DRAW_ADDR + 4);
+  drawWristRot  = EEPROM.read(EEPROM_DRAW_ADDR + 5);
 }
 
 void saveDrawingPose() {
-  EEPROM.write(EEPROM_ADDR, EEPROM_MAGIC);
-  EEPROM.write(EEPROM_ADDR + 1, drawBase);
-  EEPROM.write(EEPROM_ADDR + 2, drawShoulder);
-  EEPROM.write(EEPROM_ADDR + 3, drawElbow);
-  EEPROM.write(EEPROM_ADDR + 4, drawWrist);
-  EEPROM.write(EEPROM_ADDR + 5, drawWristRot);
+  EEPROM.write(EEPROM_DRAW_ADDR, EEPROM_DRAW_MAGIC);
+  EEPROM.write(EEPROM_DRAW_ADDR + 1, drawBase);
+  EEPROM.write(EEPROM_DRAW_ADDR + 2, drawShoulder);
+  EEPROM.write(EEPROM_DRAW_ADDR + 3, drawElbow);
+  EEPROM.write(EEPROM_DRAW_ADDR + 4, drawWrist);
+  EEPROM.write(EEPROM_DRAW_ADDR + 5, drawWristRot);
+}
+
+void loadStylusConfig() {
+  if (EEPROM.read(EEPROM_STYLUS_ADDR) != EEPROM_STYLUS_MAGIC) return;
+  stylusTouchBase     = EEPROM.read(EEPROM_STYLUS_ADDR + 1);
+  stylusTouchShoulder = EEPROM.read(EEPROM_STYLUS_ADDR + 2);
+  stylusTouchElbow    = EEPROM.read(EEPROM_STYLUS_ADDR + 3);
+  stylusTouchWrist    = EEPROM.read(EEPROM_STYLUS_ADDR + 4);
+  stylusTouchWristRot = EEPROM.read(EEPROM_STYLUS_ADDR + 5);
+  stylusTouchGripper  = EEPROM.read(EEPROM_STYLUS_ADDR + 6);
+  stylusMode          = EEPROM.read(EEPROM_STYLUS_ADDR + 7) == 1;
+}
+
+void saveStylusConfig() {
+  EEPROM.write(EEPROM_STYLUS_ADDR, EEPROM_STYLUS_MAGIC);
+  EEPROM.write(EEPROM_STYLUS_ADDR + 1, stylusTouchBase);
+  EEPROM.write(EEPROM_STYLUS_ADDR + 2, stylusTouchShoulder);
+  EEPROM.write(EEPROM_STYLUS_ADDR + 3, stylusTouchElbow);
+  EEPROM.write(EEPROM_STYLUS_ADDR + 4, stylusTouchWrist);
+  EEPROM.write(EEPROM_STYLUS_ADDR + 5, stylusTouchWristRot);
+  EEPROM.write(EEPROM_STYLUS_ADDR + 6, stylusTouchGripper);
+  EEPROM.write(EEPROM_STYLUS_ADDR + 7, stylusMode ? 1 : 0);
+}
+
+void setStylusMode(bool enabled) {
+  stylusMode = enabled;
+  if (stylusMode) {
+    moveTo(posBase, posShoulder, posElbow, posWrist, posWristRot, STYLUS_GRIPPER_ANGLE);
+    Serial.println(F("Stylus mode ON"));
+  } else {
+    Serial.println(F("Stylus mode OFF (claw mode)"));
+  }
+  saveStylusConfig();
+}
+
+void saveStylusTouchPose() {
+  stylusTouchBase = posBase;
+  stylusTouchShoulder = posShoulder;
+  stylusTouchElbow = posElbow;
+  stylusTouchWrist = posWrist;
+  stylusTouchWristRot = posWristRot;
+  stylusTouchGripper = posGripper;
+  saveStylusConfig();
+}
+
+void stylusStep(int dx, int dy) {
+  int targetBase = posBase + (dx * STYLUS_BASE_STEP);
+  int targetShoulder = posShoulder - (dy * STYLUS_SHOULDER_STEP);
+  int targetElbow = posElbow + (dy * STYLUS_ELBOW_COMP);
+  moveTo(targetBase, targetShoulder, targetElbow, posWrist, posWristRot, posGripper);
 }
 
 void setup() {
@@ -140,10 +213,12 @@ void setup() {
   servoGripper.write(posGripper);
   delay(500);
   loadDrawingPose();
+  loadStylusConfig();
 
   Serial.println(F("Adeept 5 DOF Arm ready"));
-  Serial.println(F("Pen calibration: move tip to paper, then s=save pose, g=go to pose, f=line fwd, v=line back"));
-  Serial.println(F("Commands: h=home, b/n=base, u/l=shoulder, e/t=elbow, s/g/f/v=draw, j=draw J, d=demo, o/c=gripper"));
+  Serial.println(F("Pen calibration: p=stylus mode, move tip to iPad, x=save touch home, z=go touch home"));
+  Serial.println(F("Stylus drawing: 8=N 9=NE 6=E 3=SE 2=S 1=SW 4=W 7=NW"));
+  Serial.println(F("Commands: h=home, b/n=base, u/l=shoulder, e/t=elbow, p/k=stylus/claw, x/z=touch home, s/g/f/v=draw pose, j=draw J, d=demo, o/c=gripper"));
 }
 
 void loop() {
@@ -165,6 +240,14 @@ void loop() {
         moveTo(120, 120, 60, 90, 90, GRIPPER_MAX);
         delay(300);
         moveTo(90, 90, 90, 90, 90, GRIPPER_MIN);
+        break;
+      case 'p':
+      case 'P':
+        setStylusMode(true);
+        break;
+      case 'k':
+      case 'K':
+        setStylusMode(false);
         break;
       case 'o':
       case 'O':
@@ -222,6 +305,20 @@ void loop() {
         saveDrawingPose();
         Serial.println(F("Drawing pose saved (pen-on-paper). Use g to return, f/v for line."));
         break;
+      case 'x':
+      case 'X':
+        if (!stylusMode) {
+          Serial.println(F("Enable stylus mode first (p)."));
+          break;
+        }
+        saveStylusTouchPose();
+        Serial.println(F("Stylus touch home saved."));
+        break;
+      case 'z':
+      case 'Z':
+        moveTo(stylusTouchBase, stylusTouchShoulder, stylusTouchElbow, stylusTouchWrist, stylusTouchWristRot, stylusTouchGripper);
+        Serial.println(F("At stylus touch home."));
+        break;
       case 'g':
       case 'G':
         moveTo(drawBase, drawShoulder, drawElbow, drawWrist, drawWristRot, posGripper);
@@ -236,6 +333,70 @@ void loop() {
       case 'V':
         moveTo(drawBase - LINE_STEP, drawShoulder, drawElbow, drawWrist, drawWristRot, posGripper);
         Serial.println(F("Line backward"));
+        break;
+      case '8':
+        if (!stylusMode) {
+          Serial.println(F("Enable stylus mode first (p)."));
+          break;
+        }
+        stylusStep(0, 1);
+        Serial.println(F("Stylus north"));
+        break;
+      case '9':
+        if (!stylusMode) {
+          Serial.println(F("Enable stylus mode first (p)."));
+          break;
+        }
+        stylusStep(1, 1);
+        Serial.println(F("Stylus north-east"));
+        break;
+      case '6':
+        if (!stylusMode) {
+          Serial.println(F("Enable stylus mode first (p)."));
+          break;
+        }
+        stylusStep(1, 0);
+        Serial.println(F("Stylus east"));
+        break;
+      case '3':
+        if (!stylusMode) {
+          Serial.println(F("Enable stylus mode first (p)."));
+          break;
+        }
+        stylusStep(1, -1);
+        Serial.println(F("Stylus south-east"));
+        break;
+      case '2':
+        if (!stylusMode) {
+          Serial.println(F("Enable stylus mode first (p)."));
+          break;
+        }
+        stylusStep(0, -1);
+        Serial.println(F("Stylus south"));
+        break;
+      case '1':
+        if (!stylusMode) {
+          Serial.println(F("Enable stylus mode first (p)."));
+          break;
+        }
+        stylusStep(-1, -1);
+        Serial.println(F("Stylus south-west"));
+        break;
+      case '4':
+        if (!stylusMode) {
+          Serial.println(F("Enable stylus mode first (p)."));
+          break;
+        }
+        stylusStep(-1, 0);
+        Serial.println(F("Stylus west"));
+        break;
+      case '7':
+        if (!stylusMode) {
+          Serial.println(F("Enable stylus mode first (p)."));
+          break;
+        }
+        stylusStep(-1, 1);
+        Serial.println(F("Stylus north-west"));
         break;
       default:
         break;
