@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Natural-language capability checks for live-feed bot commands."""
+"""Natural-language commands for plane-locked drawing (pose saved on MCU with s)."""
 
 from dataclasses import dataclass
 import re
@@ -12,12 +12,12 @@ class CapabilityDecision:
     response: str
     serial_command: Optional[str] = None
     should_execute: bool = False
+    action: Optional[str] = None
+    letter: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class CapabilityContext:
-    live_feed_ready: bool
-    good_view: bool
     supported_letters: Tuple[str, ...] = ("j",)
 
 
@@ -33,11 +33,9 @@ def _extract_letter(command: str) -> Optional[str]:
     match = _LETTER_PATTERN.search(command)
     if match:
         return match.group(1)
-
     match = _DRAW_PATTERN.search(command)
     if match:
         return match.group(1)
-
     if " letter j" in f" {command}" or "draw j" in command:
         return "j"
     return None
@@ -46,11 +44,9 @@ def _extract_letter(command: str) -> Optional[str]:
 def _format_supported_letters(letters: Tuple[str, ...]) -> str:
     upper = [letter.upper() for letter in letters]
     if not upper:
-        return "none yet"
+        return "none"
     if len(upper) == 1:
         return upper[0]
-    if len(upper) == 2:
-        return f"{upper[0]} and {upper[1]}"
     return ", ".join(upper[:-1]) + f", and {upper[-1]}"
 
 
@@ -60,10 +56,11 @@ def evaluate_command(command: str, context: CapabilityContext) -> CapabilityDeci
     if not normalized:
         return CapabilityDecision(
             can_execute=False,
-            response="I did not catch that. Please give me a drawing command.",
+            response="Say what you want, for example: draw the letter j with a single line.",
         )
 
     draw_requested = any(token in normalized for token in ("draw", "write", "trace"))
+    learn_requested = any(token in normalized for token in ("learn", "teach", "practice"))
     mentioned_letter = _extract_letter(normalized)
     asks_single_line = any(
         phrase in normalized
@@ -76,111 +73,77 @@ def evaluate_command(command: str, context: CapabilityContext) -> CapabilityDeci
         or normalized.endswith("?")
     )
     asks_help = any(token in normalized for token in ("help", "what can you", "commands"))
-    asks_view_status = any(
-        token in normalized for token in ("camera", "live feed", "view", "see")
-    )
 
     if asks_help:
         return CapabilityDecision(
             can_execute=True,
             response=(
-                "I can check if I can draw something and explain why. "
-                f"Right now I can draw letter {supported_text}. "
-                "Try: 'draw the letter j with a single line' or "
-                "'can you draw the letter a?'."
+                "Save your drawing pose on the arm first: put the tip on the paper, then send s on the MCU "
+                f"(or type s here). I only draw {supported_text} using that saved plane — small shoulder/elbow "
+                "motion, no camera learning. Then say: draw the letter j with a single line."
             ),
         )
 
-    if asks_view_status and not draw_requested:
-        if context.live_feed_ready and context.good_view:
-            return CapabilityDecision(
-                can_execute=True,
-                response="Live feed looks good right now, so I can draw supported letters.",
-            )
-        if context.live_feed_ready:
-            return CapabilityDecision(
-                can_execute=False,
-                response=(
-                    "Live feed is on, but I do not have a good view of the target yet. "
-                    "Show the marker clearly and I can draw."
-                ),
-            )
+    if learn_requested:
         return CapabilityDecision(
-            can_execute=False,
-            response="Live feed is not ready yet, so I cannot draw right now.",
+            can_execute=True,
+            response=(
+                "Learning from the camera is turned off. Move the arm by hand or with keys until the tip "
+                "touches where you want, send s to save that plane pose, then ask me to draw letter j."
+            ),
+            should_execute=False,
         )
 
     if not draw_requested and mentioned_letter is None:
         return CapabilityDecision(
             can_execute=False,
-            response=(
-                "I am not sure what you want yet. I understand drawing requests like "
-                "'draw the letter j with a single line'."
-            ),
+            response="Try: draw the letter j with a single line (after saving pose with s).",
         )
 
     if mentioned_letter is None:
         return CapabilityDecision(
             can_execute=False,
-            response="Please tell me which letter to draw.",
+            response="Which letter? I only support drawing J from your saved plane pose.",
         )
 
     if mentioned_letter not in context.supported_letters:
         return CapabilityDecision(
             can_execute=False,
-            response=(
-                f"I cannot draw the letter {mentioned_letter.upper()} yet. "
-                f"But I can draw letter {supported_text}."
-            ),
+            response=f"I only draw {supported_text} from the saved plane pose right now.",
         )
 
-    if not context.live_feed_ready:
-        return CapabilityDecision(
-            can_execute=False,
-            response=(
-                "I cannot draw right now because the live feed is not ready. "
-                "Check camera and serial connections."
-            ),
-        )
-
-    if not context.good_view:
-        return CapabilityDecision(
-            can_execute=False,
-            response=(
-                "I cannot draw that yet because I do not have a good view. "
-                "Center the target in the camera and try again."
-            ),
-        )
-
-    if asks_single_line:
-        if is_question:
+    if draw_requested:
+        if is_question and not asks_single_line:
             return CapabilityDecision(
                 can_execute=True,
                 response=(
-                    "Yes, I can draw letter J with a single continuous stroke path "
-                    "when the live view is good."
+                    f"Yes. After you save pose with s, I can run the plane-locked J stroke (serial y) "
+                    f"for letter {mentioned_letter.upper()}."
                 ),
-                serial_command="j",
                 should_execute=False,
+                action="plane_j",
+                letter=mentioned_letter,
+            )
+        if asks_single_line and is_question:
+            return CapabilityDecision(
+                can_execute=True,
+                response=(
+                    f"Yes. Save tip position with s, then I will trace one J stroke on that plane "
+                    f"for letter {mentioned_letter.upper()}."
+                ),
+                should_execute=False,
+                action="plane_j",
+                letter=mentioned_letter,
             )
         return CapabilityDecision(
             can_execute=True,
-            response="Great, I have a good view. I will draw letter J with a single stroke now.",
-            serial_command="j",
+            response=f"Running plane-locked J for {mentioned_letter.upper()} (firmware command y).",
             should_execute=True,
-        )
-
-    if is_question:
-        return CapabilityDecision(
-            can_execute=True,
-            response=f"Yes, I can draw letter {mentioned_letter.upper()}.",
-            serial_command="j",
-            should_execute=False,
+            action="plane_j",
+            letter=mentioned_letter,
         )
 
     return CapabilityDecision(
-        can_execute=True,
-        response=f"Great, I can draw letter {mentioned_letter.upper()} now.",
-        serial_command="j",
-        should_execute=True,
+        can_execute=False,
+        response="Try: draw the letter j with a single line.",
     )

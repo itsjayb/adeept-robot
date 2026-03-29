@@ -38,10 +38,15 @@
 
 // --- Motion ---
 #define STEP_DELAY_MS 15   // delay per degree step (increase for slower motion)
-#define LINE_STEP     10   // degrees per "line forward/backward" step
-#define STYLUS_BASE_STEP      3
-#define STYLUS_SHOULDER_STEP  2
+// Shorter steps = finer control on paper / iPad (was 10 / 15 / 3 / 2).
+#define LINE_STEP             6    // f/v line draw along saved base (was 10)
+#define JOG_STEP              8    // u/l/b/n and e/t in claw mode (was 15)
+#define STYLUS_BASE_STEP      2    // 8-way stylus nudge (was 3)
+#define STYLUS_SHOULDER_STEP  1    // was 2
 #define STYLUS_ELBOW_COMP     1
+
+// After every moveTo(), print CSV-friendly degrees (set 0 to disable serial spam).
+#define SERIAL_LOG_JOINTS     1
 
 #define EEPROM_DRAW_MAGIC      0xAB
 #define EEPROM_DRAW_ADDR       0
@@ -71,6 +76,19 @@ int stylusTouchBase = 90, stylusTouchShoulder = 90, stylusTouchElbow = 90, stylu
 void clamp(int& val, int lo, int hi) {
   if (val < lo) val = lo;
   if (val > hi) val = hi;
+}
+
+void printPoseLine() {
+  Serial.print(F("deg b="));
+  Serial.print(posBase);
+  Serial.print(F(" sh="));
+  Serial.print(posShoulder);
+  Serial.print(F(" el="));
+  Serial.print(posElbow);
+  Serial.print(F(" wr="));
+  Serial.print(posWrist);
+  Serial.print(F(" wrR="));
+  Serial.println(posWristRot);
 }
 
 void writeServo(Servo& s, int current, int target, int minA, int maxA) {
@@ -109,6 +127,9 @@ void moveTo(int b, int sh, int e, int w, int wr, int g) {
   posWrist = targetWrist;
   posWristRot = targetWristRot;
   posGripper = targetGripper;
+#if SERIAL_LOG_JOINTS
+  printPoseLine();
+#endif
 }
 
 // Draw letter J on paper. Position arm first so pencil tip is ON the paper, then send 'j'.
@@ -124,6 +145,43 @@ void drawJ() {
   moveTo(85, 86, 94, w, wr, g);
   moveTo(75, 85, 95, w, wr, g);
   moveTo(65, 84, 96, w, wr, g);    // end of hook
+}
+
+// Single-stroke J relative to drawing pose saved with 's'. Small shoulder/elbow deltas only (+/-6 deg)
+// so the tip stays on the same "paper plane" — no long shoulder/elbow reach like open-loop 8-way spam.
+void drawJFromSavedDrawingPose() {
+  if (EEPROM.read(EEPROM_DRAW_ADDR) != EEPROM_DRAW_MAGIC) {
+    Serial.println(F("No drawing pose. Put tip on paper/iPad, send s to save, then y."));
+    return;
+  }
+  Serial.println(F("Drawing J from saved plane (s)..."));
+  const int g = posGripper;
+  const int w = drawWrist;
+  const int wr = drawWristRot;
+  const int MAX_D = 4;
+  // Smaller base sweep and shoulder/elbow deltas than before (tighter J on the plane).
+  const int8_t rel[][3] = {
+    {0, 0, 0},
+    {0, 1, -1},
+    {0, 2, -2},
+    {0, 3, -3},
+    {-5, 3, -3},
+    {-10, 2, -2},
+    {-15, 1, -1},
+    {-20, 0, 0},
+  };
+  for (unsigned i = 0; i < sizeof(rel) / sizeof(rel[0]); i++) {
+    int b = drawBase + rel[i][0];
+    int sh = drawShoulder + rel[i][1];
+    int e = drawElbow + rel[i][2];
+    sh = constrain(sh, drawShoulder - MAX_D, drawShoulder + MAX_D);
+    sh = constrain(sh, SHOULDER_MIN, SHOULDER_MAX);
+    e = constrain(e, drawElbow - MAX_D, drawElbow + MAX_D);
+    e = constrain(e, ELBOW_MIN, ELBOW_MAX);
+    b = constrain(b, BASE_MIN, BASE_MAX);
+    moveTo(b, sh, e, w, wr, g);
+  }
+  Serial.println(F("Done J (plane-locked)."));
 }
 
 void loadDrawingPose() {
@@ -218,13 +276,16 @@ void setup() {
   Serial.println(F("Adeept 5 DOF Arm ready"));
   Serial.println(F("Pen calibration: p=stylus mode, move tip to iPad, x=save touch home, z=go touch home"));
   Serial.println(F("Stylus drawing: 8=N 9=NE 6=E 3=SE 2=S 1=SW 4=W 7=NW"));
-  Serial.println(F("Commands: h=home, b/n=base, u/l=shoulder, e/t=elbow, p/k=stylus/claw, x/z=touch home, s/g/f/v=draw pose, j=draw J, d=demo, o/c=gripper"));
+  Serial.println(F("= log degrees; h home; b/n base; u/l shoulder+elbow; e/t elbow; p/k stylus; x/z touch; s save plane; g f v draw; y J; j fixed J; d demo; o/c grip"));
 }
 
 void loop() {
   if (Serial.available()) {
     char cmd = Serial.read();
     switch (cmd) {
+      case '=':
+        printPoseLine();
+        break;
       case 'h':
       case 'H':
         moveTo(90, 90, 90, 90, 90, GRIPPER_MIN);
@@ -261,32 +322,54 @@ void loop() {
         break;
       case 'u':
       case 'U':
-        moveTo(posBase, posShoulder - 15, posElbow, posWrist, posWristRot, posGripper);
-        Serial.println(F("Arm up"));
+        // In stylus mode, match 8-way "north": small coordinated move keeps tip on glass.
+        if (stylusMode) {
+          stylusStep(0, 1);
+          Serial.println(F("Arm up"));
+        } else {
+          // Same shoulder/elbow coupling as stylus vertical jog so camera u/l tracks on a plane.
+          moveTo(posBase, posShoulder - JOG_STEP, posElbow + JOG_STEP, posWrist, posWristRot, posGripper);
+          Serial.println(F("Arm up"));
+        }
         break;
       case 'l':
       case 'L':
-        moveTo(posBase, posShoulder + 15, posElbow, posWrist, posWristRot, posGripper);
-        Serial.println(F("Arm down"));
+        if (stylusMode) {
+          stylusStep(0, -1);
+          Serial.println(F("Arm down"));
+        } else {
+          moveTo(posBase, posShoulder + JOG_STEP, posElbow - JOG_STEP, posWrist, posWristRot, posGripper);
+          Serial.println(F("Arm down"));
+        }
         break;
       case 'b':
       case 'B':
-        moveTo(posBase - 15, posShoulder, posElbow, posWrist, posWristRot, posGripper);
-        Serial.println(F("Base left"));
+        if (stylusMode) {
+          stylusStep(-1, 0);
+          Serial.println(F("Base left"));
+        } else {
+          moveTo(posBase - JOG_STEP, posShoulder, posElbow, posWrist, posWristRot, posGripper);
+          Serial.println(F("Base left"));
+        }
         break;
       case 'n':
       case 'N':
-        moveTo(posBase + 15, posShoulder, posElbow, posWrist, posWristRot, posGripper);
-        Serial.println(F("Base right"));
+        if (stylusMode) {
+          stylusStep(1, 0);
+          Serial.println(F("Base right"));
+        } else {
+          moveTo(posBase + JOG_STEP, posShoulder, posElbow, posWrist, posWristRot, posGripper);
+          Serial.println(F("Base right"));
+        }
         break;
       case 'e':
       case 'E':
-        moveTo(posBase, posShoulder, posElbow + 15, posWrist, posWristRot, posGripper);
+        moveTo(posBase, posShoulder, posElbow + JOG_STEP, posWrist, posWristRot, posGripper);
         Serial.println(F("Elbow out"));
         break;
       case 't':
       case 'T':
-        moveTo(posBase, posShoulder, posElbow - 15, posWrist, posWristRot, posGripper);
+        moveTo(posBase, posShoulder, posElbow - JOG_STEP, posWrist, posWristRot, posGripper);
         Serial.println(F("Elbow in"));
         break;
       case 'j':
@@ -294,6 +377,10 @@ void loop() {
         Serial.println(F("Drawing J..."));
         drawJ();
         Serial.println(F("Done"));
+        break;
+      case 'y':
+      case 'Y':
+        drawJFromSavedDrawingPose();
         break;
       case 's':
       case 'S':
